@@ -49,9 +49,12 @@ IMAGE_SIZE = 224
 BATCH_SIZE = 32
 NUM_WORKERS = 0 if os.name == "nt" else 4  # Windows spawn doesn't play nice with DataLoader workers
 
-# Baseline CNN
+# Baseline CNN (augmented, original)
 BASELINE_EPOCHS = 20
 BASELINE_LR = 1e-3
+
+# Simple baseline (no augmentation, smaller model)
+BASELINE_SIMPLE_EPOCHS = 15
 
 # ResNet-50 transfer learning
 RESNET_HEAD_EPOCHS = 10   # Phase A: frozen backbone, train head only
@@ -83,6 +86,13 @@ train_transforms = transforms.Compose([
 eval_transforms = transforms.Compose([
     transforms.Resize(256),
     transforms.CenterCrop(IMAGE_SIZE),
+    transforms.ToTensor(),
+    transforms.Normalize(IMAGENET_MEAN, IMAGENET_STD),
+])
+
+# Minimal transforms for the naive baseline — no augmentation, no crop tricks
+baseline_transforms = transforms.Compose([
+    transforms.Resize(IMAGE_SIZE),
     transforms.ToTensor(),
     transforms.Normalize(IMAGENET_MEAN, IMAGENET_STD),
 ])

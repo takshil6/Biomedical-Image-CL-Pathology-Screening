@@ -36,8 +36,8 @@ from sklearn.metrics import (
 from tqdm import tqdm
 
 from src.config import CLASS_NAMES, DEVICE, EXPERIMENTS_DIR, NUM_CLASSES
-from src.dataset import get_dataloaders
-from src.model import BaselineCNN, ResNet50Classifier
+from src.dataset import get_baseline_dataloaders, get_dataloaders
+from src.model import BaselineCNN, BaselineCNNSimple, ResNet50Classifier
 
 
 # ── Inference ────────────────────────────────────────────────────────────────
@@ -181,11 +181,16 @@ def print_and_save_report(labels, preds, save_dir, prefix):
 
 def evaluate_model(model_name: str, test_loader):
     """Load checkpoint, run test inference, generate all plots/reports."""
-    if model_name == "baseline":
+    if model_name == "baseline_simple":
+        model = BaselineCNNSimple().to(DEVICE)
+        ckpt_path = os.path.join(EXPERIMENTS_DIR, "baseline_cnn_simple", "best_model.pth")
+        save_dir = os.path.join(EXPERIMENTS_DIR, "baseline_cnn_simple")
+        display = "Baseline CNN (Simple)"
+    elif model_name == "baseline":
         model = BaselineCNN().to(DEVICE)
         ckpt_path = os.path.join(EXPERIMENTS_DIR, "baseline_cnn", "best_model.pth")
         save_dir = os.path.join(EXPERIMENTS_DIR, "baseline_cnn")
-        display = "Baseline CNN"
+        display = "Baseline CNN (Aug)"
     else:
         model = ResNet50Classifier().to(DEVICE)
         ckpt_path = os.path.join(EXPERIMENTS_DIR, "resnet50_finetuned", "best_model.pth")
@@ -236,12 +241,16 @@ def evaluate_model(model_name: str, test_loader):
 # ── Comparison table ──────────────────────────────────────────────────────────
 
 def print_comparison(results: list):
-    print("\n" + "=" * 72)
+    col_w = 22
+    n_cols = 1 + len(results)
+    total_w = col_w * n_cols
+
+    print("\n" + "=" * total_w)
     print("  MODEL COMPARISON (Test Set)")
-    print("=" * 72)
-    header = f"{'Metric':<22}" + "".join(f"{r['model']:>22}" for r in results)
+    print("=" * total_w)
+    header = f"{'Metric':<{col_w}}" + "".join(f"{r['model']:>{col_w}}" for r in results)
     print(header)
-    print("-" * 72)
+    print("-" * total_w)
 
     rows = [
         ("Accuracy",        lambda r: f"{r['accuracy']:.4f}"),
@@ -261,16 +270,20 @@ def print_comparison(results: list):
         if label == "":
             print()
             continue
-        print(f"{label:<22}" + "".join(f"{fn(r):>22}" for r in results))
+        print(f"{label:<{col_w}}" + "".join(f"{fn(r):>{col_w}}" for r in results))
 
-    if len(results) == 2:
-        delta_f1 = results[1]["macro_f1"] - results[0]["macro_f1"]
-        delta_auc = results[1]["macro_auc"] - results[0]["macro_auc"]
-        pct = delta_f1 / results[0]["macro_f1"] * 100
-        print(f"\n  F1 improvement : +{delta_f1:.4f}  ({pct:+.1f}% relative)")
+    # F1 improvement: always compare first result (simplest baseline) vs last (best model)
+    if len(results) >= 2:
+        simple_f1 = results[0]["macro_f1"]
+        best_f1   = results[-1]["macro_f1"]
+        delta_f1  = best_f1 - simple_f1
+        delta_auc = results[-1]["macro_auc"] - results[0]["macro_auc"]
+        pct       = ((best_f1 - simple_f1) / simple_f1) * 100
+        print(f"\n  F1 improvement ({results[-1]['model']} vs {results[0]['model']}):")
+        print(f"    +{delta_f1:.4f}  ({pct:+.1f}% relative)")
         print(f"  AUC improvement: +{delta_auc:.4f}")
 
-    print("=" * 72)
+    print("=" * total_w)
 
     # Save CSV
     csv_path = os.path.join(EXPERIMENTS_DIR, "comparison_table.csv")
@@ -288,17 +301,30 @@ def print_comparison(results: list):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--model", choices=["baseline", "resnet", "both"], default="both"
+        "--model",
+        choices=["baseline_simple", "baseline", "resnet", "both", "all"],
+        default="both",
     )
     args = parser.parse_args()
 
-    _, _, test_loader = get_dataloaders()
-
-    if args.model == "both":
+    if args.model == "baseline_simple":
+        _, _, test_loader = get_baseline_dataloaders()
+        evaluate_model("baseline_simple", test_loader)
+    elif args.model == "baseline":
+        _, _, test_loader = get_dataloaders()
+        evaluate_model("baseline", test_loader)
+    elif args.model == "resnet":
+        _, _, test_loader = get_dataloaders()
+        evaluate_model("resnet", test_loader)
+    elif args.model == "both":
+        _, _, test_loader = get_dataloaders()
         r_baseline = evaluate_model("baseline", test_loader)
         r_resnet   = evaluate_model("resnet",   test_loader)
         print_comparison([r_baseline, r_resnet])
-    elif args.model == "baseline":
-        evaluate_model("baseline", test_loader)
-    else:
-        evaluate_model("resnet", test_loader)
+    elif args.model == "all":
+        _, _, test_simple = get_baseline_dataloaders()
+        _, _, test_aug    = get_dataloaders()
+        r_simple   = evaluate_model("baseline_simple", test_simple)
+        r_baseline = evaluate_model("baseline",        test_aug)
+        r_resnet   = evaluate_model("resnet",          test_aug)
+        print_comparison([r_simple, r_baseline, r_resnet])

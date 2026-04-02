@@ -1,0 +1,10 @@
+              precision    recall  f1-score   support
+
+       Tumor     0.9342    0.7553    0.8353        94
+      Stroma     0.9018    0.7861    0.8400       187
+      Immune     0.9362    0.9362    0.9362        94
+       Other     0.8705    0.9680    0.9167       375
+
+    accuracy                         0.8920       750
+   macro avg     0.9107    0.8614    0.8820       750
+weighted avg     0.8945    0.8920    0.8898       750

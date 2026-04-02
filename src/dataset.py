@@ -33,6 +33,7 @@ from src.config import (
     TEST_RATIO,
     TRAIN_RATIO,
     VAL_RATIO,
+    baseline_transforms,
     eval_transforms,
     train_transforms,
 )
@@ -208,6 +209,59 @@ def get_dataloaders(
         train_set,
         batch_size=batch_size,
         sampler=sampler,       # weighted sampling → no shuffle needed
+        num_workers=num_workers,
+        pin_memory=True,
+    )
+    val_loader = DataLoader(
+        val_set,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=True,
+    )
+    test_loader = DataLoader(
+        test_set,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=True,
+    )
+
+    return train_loader, val_loader, test_loader
+
+
+def get_baseline_dataloaders(
+    batch_size: int = BATCH_SIZE,
+    num_workers: int = NUM_WORKERS,
+) -> Tuple[DataLoader, DataLoader, DataLoader]:
+    """
+    Build train / val / test DataLoaders for the naive simple baseline.
+
+    Intentionally stripped of all data-side optimizations:
+      - NO augmentation (same Resize+ToTensor+Normalize for all splits)
+      - NO WeightedRandomSampler (plain shuffle=True on train)
+      - Same stratified splits as get_dataloaders() via identical seed
+
+    This isolates model architecture from data tricks, giving a fair
+    comparison against the augmented baseline and ResNet-50.
+
+    Returns:
+        (train_loader, val_loader, test_loader)
+    """
+    full_dataset = PathologyDataset(root=DATASET_DIR, transform=None)
+    train_idx, val_idx, test_idx = stratified_split(full_dataset)
+
+    # All splits use the same minimal transform — no augmentation
+    train_set = TransformSubset(full_dataset, train_idx, transform=baseline_transforms)
+    val_set   = TransformSubset(full_dataset, val_idx,   transform=baseline_transforms)
+    test_set  = TransformSubset(full_dataset, test_idx,  transform=baseline_transforms)
+
+    print(f"[Simple baseline] splits — Train: {len(train_set)} | Val: {len(val_set)} | Test: {len(test_set)}")
+
+    train_loader = DataLoader(
+        train_set,
+        batch_size=batch_size,
+        shuffle=True,   # plain shuffle, no weighted sampling
         num_workers=num_workers,
         pin_memory=True,
     )

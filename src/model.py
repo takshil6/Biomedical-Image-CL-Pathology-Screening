@@ -1,8 +1,9 @@
 """
 Model definitions for pathology image classification.
 
-Phase 2: BaselineCNN       — simple 3-layer conv net (benchmark)
-Phase 3: ResNet50Classifier — transfer learning with two-phase fine-tuning
+BaselineCNNSimple   — tiny CNN, no augmentation (true naive baseline)
+BaselineCNN         — same depth with heavier filters, trained with augmentation
+ResNet50Classifier  — transfer learning with two-phase fine-tuning
 """
 
 import torch
@@ -11,6 +12,49 @@ from torchvision import models
 from torchvision.models import ResNet50_Weights
 
 from src.config import DROPOUT, NUM_CLASSES
+
+
+class BaselineCNNSimple(nn.Module):
+    """
+    Minimal 3-layer CNN trained WITHOUT augmentation or weighted sampling.
+
+    This is the true naive baseline — it isolates the raw model capacity
+    from the data-side optimizations (augmentation, class rebalancing).
+
+    Architecture:
+        Conv2d(3,16)  → BN → ReLU → MaxPool(2)
+        Conv2d(16,32) → BN → ReLU → MaxPool(2)
+        Conv2d(32,64) → BN → ReLU → AdaptiveAvgPool(1)
+        Flatten → FC(64, NUM_CLASSES)
+
+    Input:  (B, 3, 224, 224)
+    Output: (B, NUM_CLASSES) raw logits
+    """
+
+    def __init__(self, num_classes: int = NUM_CLASSES):
+        super().__init__()
+        self.features = nn.Sequential(
+            nn.Conv2d(3, 16, kernel_size=3, padding=1),
+            nn.BatchNorm2d(16),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2),
+
+            nn.Conv2d(16, 32, kernel_size=3, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True),
+            nn.MaxPool2d(2),
+
+            nn.Conv2d(32, 64, kernel_size=3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+            nn.AdaptiveAvgPool2d(1),
+        )
+        self.classifier = nn.Linear(64, num_classes)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.features(x)
+        x = x.view(x.size(0), -1)  # (B, 64, 1, 1) -> (B, 64)
+        return self.classifier(x)
 
 
 class BaselineCNN(nn.Module):

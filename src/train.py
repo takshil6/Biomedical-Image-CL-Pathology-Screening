@@ -31,6 +31,7 @@ from tqdm import tqdm
 from src.config import (
     BASELINE_EPOCHS,
     BASELINE_LR,
+    BASELINE_SIMPLE_EPOCHS,
     CLASS_NAMES,
     DEVICE,
     EXPERIMENTS_DIR,
@@ -42,8 +43,8 @@ from src.config import (
     SEED,
     WEIGHT_DECAY,
 )
-from src.dataset import get_dataloaders
-from src.model import BaselineCNN, ResNet50Classifier
+from src.dataset import get_baseline_dataloaders, get_dataloaders
+from src.model import BaselineCNN, BaselineCNNSimple, ResNet50Classifier
 
 
 # ── Reproducibility ──────────────────────────────────────────────────────────
@@ -246,6 +247,106 @@ def train_baseline():
     return history, best_val_f1
 
 
+def train_baseline_simple():
+    """
+    Train BaselineCNNSimple — the true naive baseline.
+
+    Deliberately kept minimal to show what a plain CNN does WITHOUT:
+      - Data augmentation
+      - WeightedRandomSampler
+      - Class-weighted loss
+      - Mixed precision
+      - Learning rate scheduler
+    """
+    seed_everything()
+    save_dir = os.path.join(EXPERIMENTS_DIR, "baseline_cnn_simple")
+    os.makedirs(save_dir, exist_ok=True)
+
+    print(f"Device: {DEVICE}")
+    print(f"Experiment dir: {save_dir}\n")
+
+    train_loader, val_loader, _ = get_baseline_dataloaders()
+
+    model = BaselineCNNSimple().to(DEVICE)
+    total_params = sum(p.numel() for p in model.parameters())
+    print(f"BaselineCNNSimple params: {total_params:,}\n")
+
+    # Plain loss — no class weights
+    criterion = nn.CrossEntropyLoss()
+
+    # Adam, fixed lr, no scheduler, no AMP
+    optimizer = torch.optim.Adam(model.parameters(), lr=BASELINE_LR)
+
+    history = {k: [] for k in [
+        "train_loss", "train_acc", "train_f1",
+        "val_loss", "val_acc", "val_f1",
+    ]}
+    best_val_f1 = 0.0
+    start_time = time.time()
+
+    print(f"\n{'Epoch':>5} | {'Train Loss':>10} {'Train Acc':>10} {'Train F1':>10} | "
+          f"{'Val Loss':>10} {'Val Acc':>10} {'Val F1':>10}")
+    print("-" * 84)
+
+    for epoch in range(1, BASELINE_SIMPLE_EPOCHS + 1):
+        # ── train ──
+        model.train()
+        running_loss = 0.0
+        all_preds, all_labels = [], []
+
+        pbar = tqdm(train_loader, desc="  Train", leave=False)
+        for images, labels in pbar:
+            images, labels = images.to(DEVICE), labels.to(DEVICE)
+            optimizer.zero_grad()
+            logits = model(images)
+            loss = criterion(logits, labels)
+            loss.backward()
+            optimizer.step()
+
+            running_loss += loss.item() * images.size(0)
+            preds = logits.argmax(dim=1)
+            all_preds.extend(preds.cpu().numpy())
+            all_labels.extend(labels.cpu().numpy())
+            pbar.set_postfix(loss=f"{loss.item():.4f}")
+
+        tr_loss = running_loss / len(train_loader.dataset)
+        tr_acc  = np.mean(np.array(all_preds) == np.array(all_labels))
+        tr_f1   = f1_score(all_labels, all_preds, average="macro", zero_division=0)
+
+        # ── validate ──
+        va_loss, va_acc, va_f1 = validate(model, val_loader, criterion, DEVICE)
+
+        for k, v in zip(
+            ["train_loss","train_acc","train_f1","val_loss","val_acc","val_f1"],
+            [tr_loss, tr_acc, tr_f1, va_loss, va_acc, va_f1]
+        ):
+            history[k].append(v)
+
+        print(f"{epoch:>5} | {tr_loss:>10.4f} {tr_acc:>10.4f} {tr_f1:>10.4f} | "
+              f"{va_loss:>10.4f} {va_acc:>10.4f} {va_f1:>10.4f}")
+
+        if va_f1 > best_val_f1:
+            best_val_f1 = va_f1
+            torch.save({
+                "epoch": epoch,
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "val_f1": va_f1,
+                "val_acc": va_acc,
+            }, os.path.join(save_dir, "best_model.pth"))
+
+    elapsed = time.time() - start_time
+    print(f"\nTraining complete in {elapsed / 60:.1f} min")
+    print(f"Best val F1: {best_val_f1:.4f}")
+
+    save_training_curves(history, save_dir)
+    with open(os.path.join(save_dir, "history.json"), "w") as f:
+        json.dump(history, f, indent=2)
+
+    print(f"Saved: training_curves.png, history.json, best_model.pth -> {save_dir}")
+    return history, best_val_f1
+
+
 def train_resnet():
     seed_everything()
     save_dir = os.path.join(EXPERIMENTS_DIR, "resnet50_finetuned")
@@ -367,12 +468,14 @@ def train_resnet():
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train pathology classifier")
     parser.add_argument(
-        "--model", choices=["baseline", "resnet"], default="baseline",
+        "--model", choices=["baseline_simple", "baseline", "resnet"], default="baseline",
         help="Which model to train",
     )
     args = parser.parse_args()
 
-    if args.model == "baseline":
+    if args.model == "baseline_simple":
+        train_baseline_simple()
+    elif args.model == "baseline":
         train_baseline()
     elif args.model == "resnet":
         train_resnet()
