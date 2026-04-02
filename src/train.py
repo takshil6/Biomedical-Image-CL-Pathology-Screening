@@ -9,6 +9,7 @@ Supports:
 
 Usage:
     python -m src.train --model baseline     # Phase 2
+    python -m src.train --model resnet       # Phase 3
 """
 
 import argparse
@@ -34,11 +35,15 @@ from src.config import (
     DEVICE,
     EXPERIMENTS_DIR,
     NUM_CLASSES,
+    RESNET_FINETUNE_EPOCHS,
+    RESNET_FINETUNE_LR,
+    RESNET_HEAD_EPOCHS,
+    RESNET_HEAD_LR,
     SEED,
     WEIGHT_DECAY,
 )
 from src.dataset import get_dataloaders
-from src.model import BaselineCNN
+from src.model import BaselineCNN, ResNet50Classifier
 
 
 # ── Reproducibility ──────────────────────────────────────────────────────────
@@ -123,34 +128,30 @@ def validate(model, loader, criterion, device):
 
 # ── Plot training curves ─────────────────────────────────────────────────────
 
-def save_training_curves(history: dict, save_dir: str):
+def save_training_curves(history: dict, save_dir: str, phase_split: int = None):
+    """
+    Plot loss / accuracy / F1 curves.
+    phase_split: if set, draws a vertical line marking the phase A→B boundary.
+    """
     epochs = range(1, len(history["train_loss"]) + 1)
 
     fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+    metrics = [
+        ("train_loss", "val_loss", "Loss"),
+        ("train_acc",  "val_acc",  "Accuracy"),
+        ("train_f1",   "val_f1",   "Macro F1-Score"),
+    ]
 
-    # Loss
-    axes[0].plot(epochs, history["train_loss"], label="Train")
-    axes[0].plot(epochs, history["val_loss"], label="Val")
-    axes[0].set_title("Loss")
-    axes[0].set_xlabel("Epoch")
-    axes[0].legend()
-    axes[0].grid(True, alpha=0.3)
-
-    # Accuracy
-    axes[1].plot(epochs, history["train_acc"], label="Train")
-    axes[1].plot(epochs, history["val_acc"], label="Val")
-    axes[1].set_title("Accuracy")
-    axes[1].set_xlabel("Epoch")
-    axes[1].legend()
-    axes[1].grid(True, alpha=0.3)
-
-    # F1
-    axes[2].plot(epochs, history["train_f1"], label="Train")
-    axes[2].plot(epochs, history["val_f1"], label="Val")
-    axes[2].set_title("Macro F1-Score")
-    axes[2].set_xlabel("Epoch")
-    axes[2].legend()
-    axes[2].grid(True, alpha=0.3)
+    for ax, (tr_key, va_key, title) in zip(axes, metrics):
+        ax.plot(epochs, history[tr_key], label="Train")
+        ax.plot(epochs, history[va_key], label="Val")
+        if phase_split:
+            ax.axvline(phase_split + 0.5, color="gray", linestyle="--",
+                       linewidth=1, label="Phase A→B")
+        ax.set_title(title)
+        ax.set_xlabel("Epoch")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
     plt.savefig(os.path.join(save_dir, "training_curves.png"), dpi=150)
@@ -245,15 +246,133 @@ def train_baseline():
     return history, best_val_f1
 
 
+def train_resnet():
+    seed_everything()
+    save_dir = os.path.join(EXPERIMENTS_DIR, "resnet50_finetuned")
+    os.makedirs(save_dir, exist_ok=True)
+
+    print(f"Device: {DEVICE}")
+    print(f"Experiment dir: {save_dir}\n")
+
+    train_loader, val_loader, _ = get_dataloaders()
+
+    model = ResNet50Classifier().to(DEVICE)
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    total = sum(p.numel() for p in model.parameters())
+    print(f"ResNet50Classifier — total params: {total:,} | trainable (Phase A): {trainable:,}\n")
+
+    class_weights = compute_class_weights(train_loader).to(DEVICE)
+    print(f"Class weights: {[f'{w:.2f}' for w in class_weights.tolist()]}")
+    criterion = nn.CrossEntropyLoss(weight=class_weights)
+    scaler = GradScaler("cuda", enabled=(DEVICE.type == "cuda"))
+
+    history = {k: [] for k in [
+        "train_loss", "train_acc", "train_f1",
+        "val_loss", "val_acc", "val_f1",
+    ]}
+    best_val_f1 = 0.0
+    start_time = time.time()
+
+    header = (f"\n{'Epoch':>5} | {'Phase':>7} | {'Train Loss':>10} {'Train Acc':>10} "
+              f"{'Train F1':>10} | {'Val Loss':>10} {'Val Acc':>10} {'Val F1':>10} | {'LR':>10}")
+    print(header)
+    print("-" * 107)
+
+    # ── Phase A: head only ───────────────────────────────────────────────────
+    optimizer = torch.optim.Adam(
+        filter(lambda p: p.requires_grad, model.parameters()),
+        lr=RESNET_HEAD_LR, weight_decay=WEIGHT_DECAY,
+    )
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode="max", factor=0.5, patience=3
+    )
+
+    for epoch in range(1, RESNET_HEAD_EPOCHS + 1):
+        tr_loss, tr_acc, tr_f1 = train_one_epoch(
+            model, train_loader, criterion, optimizer, scaler, DEVICE
+        )
+        va_loss, va_acc, va_f1 = validate(model, val_loader, criterion, DEVICE)
+        scheduler.step(va_f1)
+        lr = optimizer.param_groups[0]["lr"]
+
+        for k, v in zip(
+            ["train_loss","train_acc","train_f1","val_loss","val_acc","val_f1"],
+            [tr_loss, tr_acc, tr_f1, va_loss, va_acc, va_f1]
+        ):
+            history[k].append(v)
+
+        print(f"{epoch:>5} | {'head':>7} | {tr_loss:>10.4f} {tr_acc:>10.4f} {tr_f1:>10.4f} | "
+              f"{va_loss:>10.4f} {va_acc:>10.4f} {va_f1:>10.4f} | {lr:>10.6f}")
+
+        if va_f1 > best_val_f1:
+            best_val_f1 = va_f1
+            torch.save({"epoch": epoch, "phase": "A",
+                        "model_state_dict": model.state_dict(),
+                        "val_f1": va_f1, "val_acc": va_acc},
+                       os.path.join(save_dir, "best_model.pth"))
+
+    # ── Phase B: unfreeze layer4 + head ─────────────────────────────────────
+    print(f"\n-- Unfreezing layer4, switching to lr={RESNET_FINETUNE_LR} --\n")
+    model.unfreeze_layer4()
+
+    trainable_b = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"Trainable params (Phase B): {trainable_b:,}\n")
+
+    optimizer = torch.optim.Adam(
+        filter(lambda p: p.requires_grad, model.parameters()),
+        lr=RESNET_FINETUNE_LR, weight_decay=WEIGHT_DECAY,
+    )
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode="max", factor=0.5, patience=3
+    )
+
+    for epoch in range(RESNET_HEAD_EPOCHS + 1, RESNET_HEAD_EPOCHS + RESNET_FINETUNE_EPOCHS + 1):
+        tr_loss, tr_acc, tr_f1 = train_one_epoch(
+            model, train_loader, criterion, optimizer, scaler, DEVICE
+        )
+        va_loss, va_acc, va_f1 = validate(model, val_loader, criterion, DEVICE)
+        scheduler.step(va_f1)
+        lr = optimizer.param_groups[0]["lr"]
+
+        for k, v in zip(
+            ["train_loss","train_acc","train_f1","val_loss","val_acc","val_f1"],
+            [tr_loss, tr_acc, tr_f1, va_loss, va_acc, va_f1]
+        ):
+            history[k].append(v)
+
+        print(f"{epoch:>5} | {'finetune':>8} | {tr_loss:>10.4f} {tr_acc:>10.4f} {tr_f1:>10.4f} | "
+              f"{va_loss:>10.4f} {va_acc:>10.4f} {va_f1:>10.4f} | {lr:>10.6f}")
+
+        if va_f1 > best_val_f1:
+            best_val_f1 = va_f1
+            torch.save({"epoch": epoch, "phase": "B",
+                        "model_state_dict": model.state_dict(),
+                        "val_f1": va_f1, "val_acc": va_acc},
+                       os.path.join(save_dir, "best_model.pth"))
+
+    elapsed = time.time() - start_time
+    print(f"\nTraining complete in {elapsed / 60:.1f} min")
+    print(f"Best val F1: {best_val_f1:.4f}")
+
+    save_training_curves(history, save_dir, phase_split=RESNET_HEAD_EPOCHS)
+    with open(os.path.join(save_dir, "history.json"), "w") as f:
+        json.dump(history, f, indent=2)
+
+    print(f"Saved: training_curves.png, history.json, best_model.pth -> {save_dir}")
+    return history, best_val_f1
+
+
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train pathology classifier")
     parser.add_argument(
-        "--model", choices=["baseline"], default="baseline",
-        help="Which model to train (default: baseline)",
+        "--model", choices=["baseline", "resnet"], default="baseline",
+        help="Which model to train",
     )
     args = parser.parse_args()
 
     if args.model == "baseline":
         train_baseline()
+    elif args.model == "resnet":
+        train_resnet()
