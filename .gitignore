@@ -1,0 +1,29 @@
+# Data (large, downloaded separately)
+data/
+
+# Virtual environment
+venv/
+.venv/
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+
+# Saved model checkpoints
+experiments/*.pth
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment secrets
+.env
+
+# Project config
+CLAUDE.md
+.claude/
