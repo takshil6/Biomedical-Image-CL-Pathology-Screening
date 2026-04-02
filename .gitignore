@@ -10,8 +10,8 @@ __pycache__/
 *.pyc
 *.pyo
 
-# Saved model checkpoints
-experiments/*.pth
+# Saved model checkpoints (anywhere under experiments/)
+experiments/**/*.pth
 
 # IDE
 .vscode/
