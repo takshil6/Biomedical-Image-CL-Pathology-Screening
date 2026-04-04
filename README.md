@@ -147,8 +147,8 @@ Linear(2048, 512) → ReLU → Dropout(0.3) → Linear(512, 4)
 ### 1. Setup
 
 ```bash
-git clone https://github.com/sanket66666/Biomedical-Image-CL-for-Pathology-Screening
-cd Biomedical-Image-CL-for-Pathology-Screening
+git clone https://github.com/takshil6/Biomedical-Image-CL-Pathology-Screening.git
+cd Biomedical-Image-CL-Pathology-Screening
 python -m venv venv
 source venv/bin/activate        # Windows: venv\Scripts\activate
 pip install -r requirements.txt
@@ -224,3 +224,9 @@ Kather JN, Weis CA, Bianconi F, Melchers SM, Schad LR, Gaiser T, Marx A,
 Zöllner FG. *Multi-class texture analysis in colorectal cancer histology.*
 **Scientific Reports** 6, 27988 (2016).  
 https://doi.org/10.1038/srep27988
+
+---
+
+## License
+
+MIT. See [LICENSE](LICENSE).
